@@ -9,7 +9,7 @@ pip install git+https://github.com/interaction-lab/pi-ecg-logger.git
 ```
 
 ## Usage
-
+```python
 from pi_ecg_logger import start_logging, stop_logging
 
 start_logging(
@@ -21,3 +21,4 @@ start_logging(
 # ...
 
 stop_logging()
+```
