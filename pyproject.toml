@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pi-ecg-logger"
+version = "0.1.0"
+description = "Background ECG data logger for Raspberry Pi"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+  { name = "Amy", email = "amy.dell@usc.edu" }
+]
+
+dependencies = [
+  "adafruit-circuitpython-ads1x15",
+  "adafruit-blinka"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
