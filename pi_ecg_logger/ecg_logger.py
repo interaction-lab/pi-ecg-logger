@@ -6,9 +6,9 @@ from pathlib import Path
 
 import board
 import busio
-import adafruit_ads1x15.ads1115 as ADS
+import adafruit_ads1x15.ads1x15 as ADS
+from adafruit_ads1x15.ads1115 import ADS1115
 from adafruit_ads1x15.analog_in import AnalogIn
-
 
 # ---- Internal state ----
 _thread = None
@@ -20,12 +20,13 @@ def _ecg_logging_loop(output_path, sample_rate):
     Background ECG acquisition loop.
     """
 
-    # ---- Hardware init (INSIDE thread, not at import time) ----
+    # ---- Hardware init ----
     i2c = busio.I2C(board.SCL, board.SDA)
-    ads = ADS.ADS1115(i2c)
+    ads = ADS1115(i2c)
     ads.gain = 1
-    ads.data_rate = 860  # max stable rate
+    ads.data_rate = 860
     chan = AnalogIn(ads, ADS.P0)
+
 
     # ---- Timing setup ----
     sample_period = 1.0 / sample_rate
