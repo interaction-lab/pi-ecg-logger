@@ -14,31 +14,42 @@ from adafruit_ads1x15.analog_in import AnalogIn
 _thread = None
 _stop_event = threading.Event()
 
-# ----- ADDED: minimal phase/event logging state -----
+# ----- ADDED / MODIFIED: minimal phase/event logging state -----
 _output_dir = None
 _sample_index = 0
 _sample_index_lock = threading.Lock()
 _phases_lock = threading.Lock()
-_PHASES_FILENAME = "phases.csv"
+# now computed per-run (None until start_logging sets it)
+_PHASES_FILENAME = None
 
-def _ensure_output_dir(output_path):
-    """Remember the output directory so mark_phase() can write there."""
-    global _output_dir
-    p = Path(output_path)
-    if p.suffix:  # looks like a file path -> use parent
-        p = p.parent
-    _output_dir = p.resolve()
+def _ensure_output_dir_and_phasefile(output_base):
+    """
+    Remember the output directory and compute phase filename so mark_phase() can write there.
+
+    output_base: Path (may include parent directories) but without suffix (or with - we strip).
+    Sets global _output_dir and _PHASES_FILENAME.
+    """
+    global _output_dir, _PHASES_FILENAME
+
+    base = Path(output_base)
+    # If user passed something like "/path/to/ecg_20260213_120000.csv", strip suffix
+    if base.suffix:
+        base = base.with_suffix('')
+    _output_dir = base.parent.resolve()
     _output_dir.mkdir(parents=True, exist_ok=True)
+
+    stem = base.name
+    _PHASES_FILENAME = f"{stem}_phases.csv"
 
 def mark_phase(phase_name: str):
     """
-    Append a phase event to <output_dir>/phases.csv:
+    Append a phase event to <output_dir>/<base>_phases.csv:
       phase, timestamp_iso, timestamp_unix_ms, sample_index
 
     Raises RuntimeError if start_logging(...) hasn't been called to set output dir.
     """
-    global _sample_index, _output_dir
-    if _output_dir is None:
+    global _sample_index, _output_dir, _PHASES_FILENAME
+    if _output_dir is None or _PHASES_FILENAME is None:
         raise RuntimeError("ECG logger not started: call start_logging(...) first")
 
     with _sample_index_lock:
@@ -56,12 +67,14 @@ def mark_phase(phase_name: str):
                 w.writerow(["phase", "timestamp_iso", "timestamp_unix_ms", "sample_index"])
             w.writerow([phase_name, ts_iso, ts_unix_ms, idx])
 
-# ---- END ADDED ----
+# ---- END ADDED / MODIFIED ----
 
 
-def _ecg_logging_loop(output_path, sample_rate):
+def _ecg_logging_loop(signal_path, sample_rate):
     """
     Background ECG acquisition loop.
+
+    signal_path: full path to the signal CSV file (Path or str)
     """
 
     # ---- Hardware init ----
@@ -76,13 +89,14 @@ def _ecg_logging_loop(output_path, sample_rate):
     start_time = time.monotonic()
     next_sample_time = start_time
 
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    signal_path = Path(signal_path)
+    signal_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # ensure output dir stored for phase logging
-    _ensure_output_dir(output_path)
+    # ensure output dir stored for phase logging - this was already done by start_logging,
+    # but keep consistent behavior (no-op if already set)
+    _ensure_output_dir_and_phasefile(signal_path)
 
-    with open(output_path, "w", newline="") as f:
+    with open(signal_path, "w", newline="") as f:
         writer = csv.writer(f)
 
         # Header (explicit + machine-readable)
@@ -131,11 +145,22 @@ def _ecg_logging_loop(output_path, sample_rate):
 
 
 def start_logging(
-    output_path="/home/pi/ecg.csv",
+    output_base="/home/pi/ecg",
     sample_rate=500
 ):
     """
     Start background ECG logging.
+
+    output_base: base path (directory + base filename) WITHOUT suffix, for example:
+        "/home/pi/ecg_20260213_120000"
+    If the user passes a .csv suffix (e.g. "/home/pi/ecg_20260213_120000.csv"),
+    the suffix will be stripped automatically.
+
+    This will create two files:
+      <output_base>_signal.csv   -- sample rows
+      <output_base>_phases.csv   -- phase/event rows
+
+    (For backward compatibility this replaces the older single-output_path API.)
     """
     global _thread, _stop_event, _sample_index
 
@@ -145,8 +170,17 @@ def start_logging(
     if not (200 <= sample_rate <= 500):
         raise ValueError("Sample rate should be between 200–500 Hz for ECG")
 
-    # Remember output dir for phase logging immediately
-    _ensure_output_dir(output_path)
+    # Prepare base paths
+    base = Path(output_base)
+    if base.suffix:
+        base = base.with_suffix('')  # strip .csv if given
+
+    # Ensure directory exists and remember phase filename
+    _ensure_output_dir_and_phasefile(base)
+
+    # compute actual full paths
+    signal_path = _output_dir / f"{base.name}_signal.csv"
+    # phases file name stored in _PHASES_FILENAME by _ensure_output_dir_and_phasefile
 
     _stop_event.clear()
 
@@ -156,7 +190,7 @@ def start_logging(
 
     _thread = threading.Thread(
         target=_ecg_logging_loop,
-        args=(output_path, sample_rate),
+        args=(signal_path, sample_rate),
         daemon=True
     )
     _thread.start()
