@@ -14,12 +14,14 @@ from adafruit_ads1x15.analog_in import AnalogIn
 _thread = None
 _stop_event = threading.Event()
 
-# ----- ADDED / MODIFIED: minimal phase/event logging state -----
+# ----- minimal phase/event logging state -----
 _output_dir = None
 _sample_index = 0
 _sample_index_lock = threading.Lock()
 _phases_lock = threading.Lock()
-# now computed per-run (None until start_logging sets it)
+_start_time = None
+
+# computed per-run (None until start_logging sets it)
 _PHASES_FILENAME = None
 
 def _ensure_output_dir_and_phasefile(output_base):
@@ -44,19 +46,25 @@ def _ensure_output_dir_and_phasefile(output_base):
 def mark_phase(phase_name: str):
     """
     Append a phase event to <output_dir>/<base>_phases.csv:
-      phase, timestamp_iso, timestamp_unix_ms, sample_index
+      phase, timestamp_sec, sample_index
 
-    Raises RuntimeError if start_logging(...) hasn't been called to set output dir.
+    The timestamp_sec here is the same quantity written in the signal CSV (seconds since
+    the logger start, formatted to 6 decimal places).
+
+    Raises RuntimeError if start_logging(...) hasn't been called to set output dir/start time.
     """
-    global _sample_index, _output_dir, _PHASES_FILENAME
-    if _output_dir is None or _PHASES_FILENAME is None:
+    global _sample_index, _output_dir, _PHASES_FILENAME, _start_time
+    if _output_dir is None or _PHASES_FILENAME is None or _start_time is None:
         raise RuntimeError("ECG logger not started: call start_logging(...) first")
 
+    # capture current sample index
     with _sample_index_lock:
         idx = _sample_index
 
-    ts_unix_ms = int(time.time() * 1000)
-    ts_iso = datetime.utcnow().isoformat() + "Z"
+    # compute timestamp relative to the same start_time used by the signal CSV
+    timestamp_sec = time.monotonic() - _start_time
+    ts_sec_str = f"{timestamp_sec:.6f}"
+
     phases_path = _output_dir / _PHASES_FILENAME
 
     with _phases_lock:
@@ -64,8 +72,9 @@ def mark_phase(phase_name: str):
         with open(phases_path, "a", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             if not file_exists:
-                w.writerow(["phase", "timestamp_iso", "timestamp_unix_ms", "sample_index"])
-            w.writerow([phase_name, ts_iso, ts_unix_ms, idx])
+                # Header now matches the timestamp used in the signal CSV
+                w.writerow(["phase", "timestamp_sec", "sample_index"])
+            w.writerow([phase_name, ts_sec_str, idx])
 
 # ---- END ADDED / MODIFIED ----
 
@@ -87,6 +96,11 @@ def _ecg_logging_loop(signal_path, sample_rate):
     # ---- Timing setup ----
     sample_period = 1.0 / sample_rate
     start_time = time.monotonic()
+
+    # store global start time so mark_phase() can use the same reference
+    global _start_time
+    _start_time = start_time
+
     next_sample_time = start_time
 
     signal_path = Path(signal_path)
@@ -159,10 +173,8 @@ def start_logging(
     This will create two files:
       <output_base>_signal.csv   -- sample rows
       <output_base>_phases.csv   -- phase/event rows
-
-    (For backward compatibility this replaces the older single-output_path API.)
     """
-    global _thread, _stop_event, _sample_index
+    global _thread, _stop_event, _sample_index, _start_time
 
     if _thread and _thread.is_alive():
         raise RuntimeError("ECG logging already running")
@@ -184,9 +196,10 @@ def start_logging(
 
     _stop_event.clear()
 
-    # reset sample index
+    # reset sample index and start_time
     with _sample_index_lock:
         _sample_index = 0
+    _start_time = None
 
     _thread = threading.Thread(
         target=_ecg_logging_loop,
@@ -200,6 +213,9 @@ def stop_logging():
     """
     Stop background ECG logging.
     """
+    global _start_time
     _stop_event.set()
     if _thread:
         _thread.join(timeout=2.0)
+    # clear start time so subsequent mark_phase() calls will fail until restarted
+    _start_time = None
